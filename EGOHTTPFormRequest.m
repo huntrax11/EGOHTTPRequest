@@ -26,6 +26,8 @@
 
 #import "EGOHTTPFormRequest.h"
 
+#define kMultiPartFormBoundary @"----FormBoundary+2f552ede3c76ff0bbca9dfa8e"
+
 @interface EGOHTTPFormRequest ()
 - (void)buildFormDataPostBody;
 @end
@@ -41,35 +43,86 @@
 	[_formData setObject:value forKey:key];
 }
 
+- (NSData*)formDataFromKey:(NSString*)key Value:(id)value{
+	NSMutableData *body = [[NSMutableData alloc] init];
+	if(![value isKindOfClass:[NSArray class]]){
+		[body appendData:[[NSString stringWithFormat:@"--%@\r\n"
+							"Content-Disposition: form-data; name=\"%@\"",
+							kMultiPartFormBoundary, key] dataUsingEncoding:_stringEncoding]];
+	}
+	if([value isKindOfClass:[NSArray class]]) {
+		for(id subvalue in value) {
+			[body appendData:[self formDataFromKey:key Value:subvalue]];
+		}
+	} else if([value isKindOfClass:[NSData class]]) {
+		[body appendData:[[NSString stringWithFormat:@"\r\n\r\n"] dataUsingEncoding:_stringEncoding]];
+		[body appendData:value];
+	} else if([value isKindOfClass:[UIImage class]]) {
+		[body appendData:[[NSString stringWithFormat:@"; filename=\"image.jpg\";\r\n"
+							"Content-Type: image/jpeg\r\n\r\n"] dataUsingEncoding:_stringEncoding]];
+		[body appendData:UIImageJPEGRepresentation(value, 0.6)];
+	} else {
+		[body appendData:[[NSString stringWithFormat:@"\r\n\r\n"] dataUsingEncoding:_stringEncoding]];
+		[body appendData:[[value description] dataUsingEncoding:_stringEncoding]];
+	}
+	if(![value isKindOfClass:[NSArray class]]){
+		[body appendData:[[NSString stringWithFormat:@"\r\n"] dataUsingEncoding:_stringEncoding]];
+	}
+	NSData *data = [NSData dataWithData:body];
+	[body release];
+	return data;
+}
+
 - (void)buildFormDataPostBody {
 	self.requestMethod = @"POST";
 	if(!_formData) return;
-	
-	NSMutableString* requestString = [[NSMutableString alloc] init];
+
+	BOOL multipart=NO;
+	for(id value in _formData.allValues) {
+		if(![value isKindOfClass:[NSString class]]) {
+			multipart=YES;
+			break;
+		}
+	}
 	
 	if(_stringEncoding == 0) {
 		_stringEncoding = NSUTF8StringEncoding;
 	}
-	
-	for(NSString* key in _formData) {
-		NSString* value = [[_formData objectForKey:key] description];
 
-		if(!value || value.length == 0) {
-			[requestString appendFormat:@"%@=&", [key urlEncodedStringWithEncoding:_stringEncoding]];
-		} else {
-			[requestString appendFormat:@"%@=%@&", [key urlEncodedStringWithEncoding:_stringEncoding], [value urlEncodedStringWithEncoding:_stringEncoding]];
+	if(!multipart) {
+		NSMutableString* requestString = [[NSMutableString alloc] init];
+
+		for(NSString* key in _formData) {
+			NSString* value = [[_formData objectForKey:key] description];
+
+			if(!value || value.length == 0) {
+				[requestString appendFormat:@"%@=&", [key urlEncodedStringWithEncoding:_stringEncoding]];
+			} else {
+				[requestString appendFormat:@"%@=%@&", [key urlEncodedStringWithEncoding:_stringEncoding], [value urlEncodedStringWithEncoding:_stringEncoding]];
+			}
 		}
-	}
-	
-	if(requestString.length > 0) {
-		[requestString replaceCharactersInRange:NSMakeRange(requestString.length-1, 1) withString:@""]; // Removes trailing &
-		self.requestBody = [requestString dataUsingEncoding:_stringEncoding];
-		
-		NSString* charset = (NSString*)CFStringConvertEncodingToIANACharSetName(CFStringConvertNSStringEncodingToEncoding(_stringEncoding));
-		[self addRequestHeader:@"Content-Type" value:[NSString stringWithFormat:@"application/x-www-form-urlencoded; charset=%@", charset]];
-	}
 
-	[requestString release];
+		if(requestString.length > 0) {
+			[requestString replaceCharactersInRange:NSMakeRange(requestString.length-1, 1) withString:@""]; // Removes trailing &
+			self.requestBody = [requestString dataUsingEncoding:_stringEncoding];
+
+			NSString* charset = (NSString*)CFStringConvertEncodingToIANACharSetName(CFStringConvertNSStringEncodingToEncoding(_stringEncoding));
+			[self addRequestHeader:@"Content-Type" value:[NSString stringWithFormat:@"application/x-www-form-urlencoded; charset=%@", charset]];
+		}
+
+		[requestString release];
+	} else {
+		NSMutableData *body=[[NSMutableData alloc] init];
+		for(NSString *key in _formData.allKeys){
+			[body appendData:[self formDataFromKey:key Value:[_formData objectForKey:key]]];
+		}
+		[body appendData:[[NSString stringWithFormat:@"--%@--\r\n", kMultiPartFormBoundary] dataUsingEncoding:_stringEncoding]];
+		[self addRequestHeader:@"Content-Type" value:[NSString stringWithFormat:@"multipart/form-data; boundary=%@",
+		                                                                        kMultiPartFormBoundary]];
+		[self addRequestHeader:@"Content-Length" value:[NSString stringWithFormat:@"%d", [body length]]];
+		self.requestBody=[NSData dataWithData:body];
+		[body release];
+	}
 }
 
 - (void)startAsynchronous {
