@@ -28,10 +28,12 @@
 
 static NSMutableArray* __currentRequests;
 static NSLock* __requestsLock;
+static NSLock* __runloopLock;
 
 @interface EGOHTTPRequest ()
 + (void)cleanUpRequest:(EGOHTTPRequest*)request;
 + (NSLock*)_requestsLock;
++ (NSLock*)_runloopLock;
 - (NSURLRequest*)_buildURLRequest;
 @end
 
@@ -79,6 +81,16 @@ static NSLock* __requestsLock;
 	}
 	
 	return __requestsLock;
+}
+
++ (NSLock*)_runloopLock {
+	@synchronized(self) {
+		if(!__runloopLock) {
+			__runloopLock = [[NSLock alloc] init];
+		}
+	}
+
+	return __runloopLock;
 }
 
 - (void)addRequestHeader:(NSString *)header value:(NSString *)value {
@@ -161,24 +173,24 @@ static NSLock* __requestsLock;
 
 - (void)startConnectionInBackgroundWithRequest:(NSURLRequest*)request {
 	NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
-	_backgroundThread = [[NSThread currentThread] retain];
-	
-	_connection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES];
-	
-	while(!isCancelled && !isFinished) {
-		[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+	static NSRunLoop *_runloop = nil;
+	_connection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:NO];
+	[[[self class] _runloopLock] lock];
+	BOOL runloopPresent = !!_runloop;
+	if(!runloopPresent) {
+		_runloop=[NSRunLoop currentRunLoop];
 	}
-	
-	if(isCancelled) {
-		[_connection cancel];
+	[[[self class] _runloopLock] unlock];
+	[_connection scheduleInRunLoop:_runloop forMode:NSDefaultRunLoopMode];
+	[_connection start];
+	if(!runloopPresent) {
+		while([[self class] currentRequests].count > 0) {
+			[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+		}
+		[[[self class] _runloopLock] lock];
+		_runloop=nil;
+		[[[self class] _runloopLock] unlock];
 	}
-
-	[_backgroundThread release];
-	_backgroundThread = nil;
-	
-	[_connection release];
-	_connection = nil;
-	
 	[pool release];
 }
 
