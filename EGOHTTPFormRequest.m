@@ -74,7 +74,8 @@
 }
 
 - (void)buildFormDataPostBody {
-	self.requestMethod = @"POST";
+	if(self.requestMethod == nil)
+		self.requestMethod = @"POST";
 	if(!_formData) return;
 
 	BOOL multipart=NO;
